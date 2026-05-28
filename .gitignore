@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.env
+.env.txt
 chroma_db/
 data/processed/
 data/raw/wikipedia_updates/

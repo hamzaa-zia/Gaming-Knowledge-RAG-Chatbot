@@ -1,6 +1,7 @@
 import re
 
 from src.config import DEFAULT_SENTENCE_LIMIT, DEFAULT_TOP_K
+from src.llm_client import generate_gemini_answer
 from src.text_processing import split_sentences
 from src.vector_store import LocalVectorStore
 
@@ -180,6 +181,8 @@ class RetrievalChatbot:
         history: list[dict] | None = None,
         top_k: int = DEFAULT_TOP_K,
         sentence_limit: int = DEFAULT_SENTENCE_LIMIT,
+        llm_provider: str = "Extractive",
+        answer_style: str = "Concise",
     ) -> dict:
         history = history or []
         search_query = build_search_query(question, history)
@@ -210,17 +213,31 @@ class RetrievalChatbot:
             if len(selected_sentences) >= sentence_limit:
                 break
 
-        if not selected_sentences or all(result["score"] <= 0 for result in retrieved_chunks):
+        no_retrieval_match = not selected_sentences or all(
+            result["score"] <= 0 for result in retrieved_chunks
+        )
+        if no_retrieval_match:
             answer = (
                 "I could not find a direct answer in the indexed Wikipedia corpus. "
                 "Try asking with more specific gaming terms or rebuild the index with more sources."
             )
+            mode = "extractive"
+        elif llm_provider == "Gemini":
+            answer = generate_gemini_answer(
+                question=question,
+                history=history,
+                retrieved_chunks=retrieved_chunks,
+                answer_style=answer_style,
+            )
+            mode = "gemini"
         else:
             answer = self._compose_answer(question, selected_sentences)
+            mode = "extractive"
 
         return {
             "answer": answer,
             "search_query": search_query,
+            "mode": mode,
             "sources": self._format_sources(
                 [result for _, result in selected_sentences] or retrieved_chunks
             ),
