@@ -1,8 +1,7 @@
 # 🎮 Gaming Knowledge RAG Chatbot
 
 A conversational Retrieval-Augmented Generation (RAG) chatbot for gaming knowledge. It answers questions about gaming history, AAA games, open-world games, genres, cloud gaming, mobile games, and the gaming market using a local Wikipedia-based corpus.
-
-The project is built for an internship submission and a university AI course. The base system runs as a free local retrieval chatbot, while Gemini API mode is optional for LLM-generated answers over the retrieved context.
+ The base system runs as a free local retrieval chatbot, while Gemini API mode is optional for LLM-generated answers over the retrieved context.
 
 ---
 
