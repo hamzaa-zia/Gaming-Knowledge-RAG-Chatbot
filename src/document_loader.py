@@ -27,6 +27,7 @@ def configured_wikipedia_urls() -> dict[str, str]:
 
 
 def path_keys(path: Path) -> set[str]:
+    # Store both raw and resolved paths because refresh logs may contain either.
     keys = {str(path)}
     try:
         keys.add(str(path.resolve()))
@@ -52,6 +53,8 @@ def build_source_metadata(
     page: int | None,
     source_map: dict[str, dict[str, str]] | None = None,
 ) -> dict:
+    # Every chunk carries source metadata so answers can cite Wikipedia titles,
+    # page numbers, local files, and clickable URLs.
     source_info = {}
     for key in path_keys(path):
         if source_map and key in source_map:
@@ -97,6 +100,8 @@ def load_pdf(path: Path, source_map: dict[str, dict[str, str]] | None = None) ->
 
 
 def load_wikipedia_source_map() -> dict[str, dict[str, str]]:
+    # Refreshed Wikipedia text files get exact title/URL metadata from the
+    # refresh log instead of relying only on local filenames.
     if not WIKI_SOURCE_LOG_PATH.exists():
         return {}
     try:
@@ -135,6 +140,8 @@ def load_text_file(path: Path, source_map: dict[str, dict[str, str]] | None = No
 
 
 def load_documents(raw_dir: Path = RAW_DATA_DIR) -> list[dict]:
+    # PDFs are split page-by-page; text/markdown files become one document each
+    # before the shared chunking pipeline handles windowing.
     documents = []
     source_map = load_wikipedia_source_map()
     for path in sorted(raw_dir.rglob("*")):

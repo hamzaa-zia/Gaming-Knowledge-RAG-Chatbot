@@ -22,6 +22,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    # Ingestion is the full rebuild path: optional Wikipedia refresh, document
+    # loading, cleaning/chunking, embedding, and FAISS persistence.
     if args.refresh_wikipedia:
         sources = refresh_wikipedia_sources()
         print(f"Refreshed {len(sources)} Wikipedia pages.")
@@ -35,7 +37,7 @@ def main() -> None:
     print(f"Created {len(chunks)} text chunks.")
 
     metadata = build_vector_index(chunks)
-    print("Vector index built successfully.")
+    print(f"FAISS vector index built successfully with {metadata['embedding_model']}.")
     print(f"Sources: {metadata['source_count']}")
     print(f"Chunks: {metadata['chunk_count']}")
 

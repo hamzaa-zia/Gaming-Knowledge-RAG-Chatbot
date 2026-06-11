@@ -12,7 +12,7 @@ This chatbot combines:
 
 - 📚 A custom Wikipedia gaming corpus
 - 🧹 Corpus cleaning and text chunking
-- 🔎 TF-IDF vector search with cosine similarity
+- 🔎 Local sentence-transformer embeddings with FAISS similarity search
 - 🧠 Conversation memory for follow-up prompts
 - 💬 Concise conversational answer formatting
 - 🕹️ A custom arcade-style Streamlit interface
@@ -34,10 +34,10 @@ The main goal is to show how a chatbot can remember conversation context and ret
 |---|---|
 | `streamlit` | Builds the desktop-style chatbot interface. Important functions include `st.set_page_config()`, `st.columns()`, `st.chat_input()`, `st.session_state`, `st.button()`, `st.radio()`, `st.checkbox()`, `st.status()`, and custom `st.markdown()` HTML/CSS. |
 | `pypdf` | Extracts text from Wikipedia PDF files. `PdfReader` opens each PDF and `page.extract_text()` reads page content. |
-| `scikit-learn` | Creates the local vectorized document store. `TfidfVectorizer` converts chunks into TF-IDF vectors, and `cosine_similarity` ranks chunks against the user query. |
-| `joblib` | Saves and loads the fitted TF-IDF vectorizer and matrix so the index does not need to rebuild every run. |
+| `sentence-transformers` | Loads the free local embedding model. `SentenceTransformer` converts each cleaned chunk and user query into dense semantic vectors. |
+| `faiss-cpu` | Stores and searches the local vector index. `IndexFlatIP` ranks normalized embeddings by cosine-style similarity. |
+| `numpy` | Converts embedding arrays into `float32` vectors required by FAISS. |
 | `requests` | Fetches optional updated article text from the Wikipedia API. |
-| `beautifulsoup4` | Listed in `requirements.txt` for possible HTML parsing, but the current active pipeline uses Wikipedia API plaintext and PDF extraction instead. |
 | `google-genai` | Connects to Gemini API when optional LLM mode is selected. |
 | `python-dotenv` | Loads `GEMINI_API_KEY` and `GEMINI_MODEL` from `.env` or `.env.txt`. |
 | `json` | Stores chunks, source logs, and index metadata in readable files. |
@@ -59,13 +59,13 @@ The main goal is to show how a chatbot can remember conversation context and ret
 
 The chatbot does not answer from memory alone. It first retrieves relevant chunks from the local Wikipedia corpus, then forms an answer from those retrieved chunks. In Gemini mode, the retrieved chunks are passed as context to the Gemini API.
 
-### 2. Local Vectorized Document Store
+### 2. Local FAISS Vector Store
 
-The project uses `TfidfVectorizer` instead of a paid embedding model. Each cleaned text chunk becomes a TF-IDF vector, and the full vector matrix is stored locally with `joblib`.
+The project uses a free local sentence-transformer model instead of paid embedding APIs. Each cleaned text chunk becomes a dense embedding vector, and those vectors are stored locally in a FAISS index.
 
-### 3. TF-IDF + Cosine Similarity Retrieval
+### 3. Embedding + FAISS Similarity Retrieval
 
-When the user asks a question, the same vectorizer transforms the query into a vector. `cosine_similarity` compares the query vector with stored chunk vectors and returns the top-ranked chunks.
+When the user asks a question, the same embedding model converts the query into a vector. FAISS compares the query vector with stored chunk vectors and returns the top-ranked chunks.
 
 ### 4. Corpus Cleaning
 
@@ -129,7 +129,7 @@ The interface is customized beyond a default chatbot:
 2. `src/wiki_fetcher.py` optionally downloads updated Wikipedia text with `--refresh-wikipedia`.
 3. `src/document_loader.py` loads PDFs and text files from `data/raw/`, extracts text, and attaches source metadata.
 4. `src/text_processing.py` cleans the corpus and creates overlapping text chunks.
-5. `src/vector_store.py` builds the TF-IDF matrix and saves the vectorizer, matrix, chunks, and metadata.
+5. `src/vector_store.py` builds the FAISS index and saves the embedding config, FAISS index, chunks, and metadata.
 6. `app.py` loads the saved index through `LocalVectorStore`.
 7. The user asks a question through the Streamlit chat input.
 8. `src/rag_chatbot.py` expands the query, uses conversation history when needed, retrieves top chunks, scores sentences, and creates a concise answer.
@@ -185,9 +185,9 @@ The corpus uses Wikipedia-only gaming sources, including:
 Current index snapshot:
 
 - Loaded document sections/pages: `429`
-- Created text chunks: `1758`
-- Indexed source titles: `26`
-- Wikipedia source URLs: `26`
+- Created text chunks: `2307`
+- Indexed source titles: `35`
+- Wikipedia source URLs: `35`
 
 ---
 
@@ -264,8 +264,8 @@ After indexing, the project creates:
 
 ```text
 data/processed/vector_index/chunks.json
-data/processed/vector_index/tfidf_vectorizer.joblib
-data/processed/vector_index/tfidf_matrix.joblib
+data/processed/vector_index/faiss.index
+data/processed/vector_index/embedding_config.json
 data/processed/vector_index/index_metadata.json
 data/processed/wikipedia_sources.json
 ```
@@ -275,7 +275,7 @@ data/processed/wikipedia_sources.json
 ## ✅ What This Project Demonstrates
 
 - How RAG improves chatbot answers by grounding them in retrieved documents
-- How to build a free local retrieval system without paid embeddings
+- How to build a free local semantic retrieval system without paid embedding APIs
 - How to clean and chunk a custom PDF/text corpus
 - How to persist and reuse a local vector index
 - How to add conversational memory with Streamlit session state
@@ -289,14 +289,14 @@ data/processed/wikipedia_sources.json
 - Local extractive mode is fast and free, but less fluent than a full LLM.
 - Gemini mode requires a valid API key.
 - Market-size answers are limited to the figures present in the indexed Wikipedia text.
-- TF-IDF is lexical, so it works best when the user prompt shares vocabulary with the corpus.
+- The first FAISS index build downloads the local embedding model if it is not already cached.
 - Wikipedia refresh requests can be rate-limited; skipped pages are logged and the index still builds from available sources.
 
 ---
 
 ## 🔮 Future Improvements
 
-- Replace or supplement TF-IDF with semantic embeddings such as sentence-transformers.
-- Add ChromaDB or FAISS for a more advanced vector store.
+- Add reranking on top of FAISS retrieval for stronger source selection.
+- Add ChromaDB as an optional metadata-rich vector database.
 - Add prepared evaluation questions for retrieval and answer quality testing.
 - Package the Streamlit app into a desktop-style executable after the RAG workflow is finalized.

@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 
 from src.config import DEFAULT_SENTENCE_LIMIT, DEFAULT_TOP_K
 from src.llm_client import generate_gemini_answer
@@ -55,10 +56,24 @@ REFERENCE_MARKERS = (
     "further reading",
 )
 
+MIN_RETRIEVAL_SCORE = 0.18
+
 
 def keywords(text: str) -> set[str]:
     tokens = re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text.lower())
     return {token for token in tokens if token not in GENERIC_TERMS}
+
+
+def is_skill_or_competitive_query(text: str) -> bool:
+    # Skill questions are usually comparative/opinion-like, so retrieval needs
+    # competitive gaming terms instead of only generic "genre" terms.
+    return bool(
+        re.search(
+            r"\b(skill|skilled|mastery|mechanic|mechanical|competitive|competition|"
+            r"esports?|tournament|hard|difficult|difficulty|challenging|ranked)\b",
+            text.lower(),
+        )
+    )
 
 
 def expand_query(question: str) -> str:
@@ -70,7 +85,13 @@ def expand_query(question: str) -> str:
         expansions.append("history early arcade console computer mobile online esports")
     if "open world" in lower_question:
         expansions.append("player autonomy freedom exploration nonlinear sandbox objectives")
-    if "genre" in lower_question or "genres" in lower_question:
+    if is_skill_or_competitive_query(question):
+        expansions.append(
+            "competitive video game genres esports tournament professional players skill mastery "
+            "mechanical skill reflexes strategy teamwork fighting game shooter multiplayer "
+            "online battle arena moba battle royale speedrunning game mechanics difficulty"
+        )
+    elif "genre" in lower_question or "genres" in lower_question:
         expansions.append("video game genre action adventure role-playing shooter racing sports puzzle strategy")
     if "action-adventure" in lower_question or "action adventure" in lower_question:
         expansions.append("action-adventure game exploration combat puzzles story")
@@ -118,6 +139,8 @@ def build_search_query(question: str, history: list[dict]) -> str:
 def sentence_score(
     sentence: str, query_terms: set[str], base_score: float, search_query: str
 ) -> float:
+    # FAISS ranks chunks; this second pass ranks individual sentences inside
+    # those chunks so local extractive answers stay concise.
     sentence_terms = keywords(sentence)
     overlap = len(query_terms & sentence_terms)
     density = overlap / max(len(sentence_terms), 1)
@@ -151,11 +174,49 @@ def sentence_score(
     if "open world" in lower_query:
         if any(term in lower_sentence for term in ("autonomy", "freedom", "exploration", "nonlinear", "sandbox")):
             score += 1.4
+    skill_query = is_skill_or_competitive_query(lower_query)
     if "genre" in lower_query:
-        if any(term in lower_sentence for term in ("classification", "how it is played", "gameplay interaction")):
+        if not skill_query and any(
+            term in lower_sentence
+            for term in ("classification", "how it is played", "gameplay interaction")
+        ):
             score += 2.0
         if any(term in lower_sentence for term in ("computer gaming world", "freedom planet", "mini metro")):
             score -= 1.2
+    if skill_query:
+        if any(
+            term in lower_sentence
+            for term in (
+                "esports",
+                "competitive",
+                "competition",
+                "tournament",
+                "professional",
+                "skill",
+                "mastery",
+                "mechanics",
+                "difficulty",
+                "speedrunning",
+                "players compete",
+                "ranked",
+            )
+        ):
+            score += 2.0
+        if any(
+            term in lower_sentence
+            for term in (
+                "fighting game",
+                "shooter",
+                "multiplayer online battle arena",
+                "moba",
+                "battle royale",
+                "strategy",
+                "sports video game",
+            )
+        ):
+            score += 1.0
+        if any(term in lower_sentence for term in ("classification", "informal classification")):
+            score -= 1.6
     if "cloud" in lower_query or "streaming" in lower_query:
         if any(term in lower_sentence for term in ("remote servers", "streams", "cloud computing", "latency")):
             score += 1.8
@@ -208,6 +269,7 @@ def sentence_score(
 
 
 def is_answer_sentence(sentence: str) -> bool:
+    # Filter noisy PDF/Wikipedia fragments before they can become final answers.
     lower_sentence = sentence.lower()
     if lower_sentence.startswith(
         ("both of which", "of which", "these bugs", "first-generation pong console")
@@ -231,6 +293,10 @@ def is_answer_sentence(sentence: str) -> bool:
         return False
     if "museum" in lower_sentence and "history" in lower_sentence:
         return False
+    if "skill gallery" in lower_sentence:
+        return False
+    if lower_sentence.startswith("competitions in the genre"):
+        return False
     if len(sentence.split()) < 8:
         return False
     if sentence and sentence[0].islower():
@@ -241,6 +307,12 @@ def is_answer_sentence(sentence: str) -> bool:
 def clean_answer_sentence(sentence: str) -> str:
     sentence = re.sub(r"=+\s*([^=]{1,80})\s*=+", r"\1", sentence)
     sentence = re.sub(r"\[[^\]]{1,10}\]", "", sentence)
+    sentence = re.sub(
+        r"^(AAA \(video game industry\)|Open world|Video game|Gaming|Cloud gaming|Horror game|Racing video game|Sports video game)\s+(?=(A|An|The|In|It|This|These)\b)",
+        "",
+        sentence,
+        flags=re.IGNORECASE,
+    )
     sentence = re.sub(
         r"^(Cloud gaming|Horror game|Racing video game)\s+\1\b",
         r"\1",
@@ -282,15 +354,35 @@ class RetrievalChatbot:
         top_k: int = DEFAULT_TOP_K,
         sentence_limit: int = DEFAULT_SENTENCE_LIMIT,
         llm_provider: str = "Extractive",
+        progress: Callable[[str, str], None] | None = None,
     ) -> dict:
+        def report(title: str, detail: str) -> None:
+            if progress:
+                progress(title, detail)
+
         history = history or []
+        report(
+            "Reading the prompt",
+            "Building a conversation-aware query from the latest question.",
+        )
         search_query = build_search_query(question, history)
         sentence_limit = min(sentence_limit, 3)
         if "what is gaming" in question.lower():
             top_k = max(top_k, 12)
             sentence_limit = min(sentence_limit, 3)
+        if is_skill_or_competitive_query(question):
+            top_k = max(top_k, 14)
+            sentence_limit = min(sentence_limit, 3)
+        report(
+            "Retrieving source context",
+            "Searching the local Wikipedia chunks and ranking the strongest matches.",
+        )
         retrieved_chunks = self.vector_store.search(search_query, top_k=top_k)
 
+        report(
+            "Checking source evidence",
+            "Filtering retrieved chunks into answer-ready sentences.",
+        )
         query_terms = keywords(search_query)
         scored_sentences = []
         for result in retrieved_chunks:
@@ -313,9 +405,9 @@ class RetrievalChatbot:
             if len(selected_sentences) >= sentence_limit:
                 break
 
-        no_retrieval_match = not selected_sentences or all(
-            result["score"] <= 0 for result in retrieved_chunks
-        )
+        top_score = retrieved_chunks[0]["score"] if retrieved_chunks else 0
+        no_retrieval_match = not selected_sentences or top_score < MIN_RETRIEVAL_SCORE
+        fallback_reason = ""
         if no_retrieval_match:
             answer = (
                 "I could not find a solid match in the indexed gaming corpus yet. "
@@ -323,13 +415,41 @@ class RetrievalChatbot:
             )
             mode = "extractive"
         elif llm_provider == "Gemini":
-            answer = generate_gemini_answer(
-                question=question,
-                history=history,
-                retrieved_chunks=retrieved_chunks,
+            report(
+                "Generating source-aware answer",
+                "Sending only the retrieved Wikipedia context to Gemini.",
             )
-            mode = "gemini"
+            fallback_reason = ""
+            try:
+                # If Gemini fails after retries, the same retrieved evidence is
+                # still used to produce a local answer for stable demos.
+                answer = generate_gemini_answer(
+                    question=question,
+                    history=history,
+                    retrieved_chunks=retrieved_chunks,
+                )
+                answer = self._ensure_source_line(
+                    answer,
+                    [result for _, result in selected_sentences] or retrieved_chunks,
+                )
+                mode = "gemini"
+            except Exception as exc:
+                fallback_reason = str(exc)
+                report(
+                    "Using local FAISS fallback",
+                    "Gemini did not respond reliably, so the local answer engine is taking over.",
+                )
+                local_answer = self._compose_answer(question, selected_sentences)
+                answer = (
+                    "Gemini could not complete this request, so I answered using local FAISS retrieval. "
+                    f"{local_answer}"
+                )
+                mode = "extractive_fallback"
         else:
+            report(
+                "Composing source-aware answer",
+                "Using the best retrieved sentences and attaching source titles.",
+            )
             answer = self._compose_answer(question, selected_sentences)
             mode = "extractive"
 
@@ -337,6 +457,7 @@ class RetrievalChatbot:
             "answer": answer,
             "search_query": search_query,
             "mode": mode,
+            "fallback_reason": fallback_reason,
             "sources": self._format_sources(
                 [result for _, result in selected_sentences] or retrieved_chunks
             ),
@@ -357,14 +478,45 @@ class RetrievalChatbot:
             opening = "Here is the market picture the corpus gives."
         elif "evolved" in lower_question or "history" in lower_question:
             opening = "Here is the gaming history arc in simple terms."
+        elif is_skill_or_competitive_query(question):
+            opening = (
+                "The corpus does not rank one genre as objectively requiring the most skill, "
+                "but it points toward competitive genres and esports-heavy games."
+            )
         else:
             opening = "Here is the quick answer from the gaming corpus."
 
         cited_sentences = []
         for sentence, result in selected_sentences:
+            cited_sentences.append(sentence)
+        answer = f"{opening} {' '.join(cited_sentences)}"
+        return self._ensure_source_line(
+            answer,
+            [result for _, result in selected_sentences],
+        )
+
+    def _source_titles(self, retrieved_chunks: list[dict], limit: int = 3) -> list[str]:
+        titles = []
+        seen = set()
+        for result in retrieved_chunks:
             title = result["metadata"].get("source_title", "Wikipedia source")
-            cited_sentences.append(f"{sentence} [{title}]")
-        return f"{opening} {' '.join(cited_sentences)}"
+            normalized = title.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            titles.append(title)
+            if len(titles) >= limit:
+                break
+        return titles
+
+    def _ensure_source_line(self, answer: str, retrieved_chunks: list[dict]) -> str:
+        answer = answer.strip()
+        if re.search(r"(?im)^sources\s*:", answer):
+            return answer
+        titles = self._source_titles(retrieved_chunks)
+        if not titles:
+            return answer
+        return f"{answer}\n\nSources: {'; '.join(titles)}"
 
     def _format_sources(self, retrieved_chunks: list[dict]) -> list[dict]:
         sources = []

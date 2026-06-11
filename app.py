@@ -35,6 +35,8 @@ TOPIC_BUTTONS = [
 
 QUICK_LAUNCH_COLUMNS = 4
 
+# Streamlit is styled through one CSS block so the app feels like a custom
+# desktop console while still using Streamlit's runtime controls underneath.
 CUSTOM_CSS = """
 <style>
     :root {
@@ -347,6 +349,94 @@ CUSTOM_CSS = """
         margin-bottom: 0.4rem;
     }
 
+    .message-source-strip {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.38rem;
+        margin-top: 0.72rem;
+        padding-top: 0.62rem;
+        border-top: 1px solid rgba(0, 245, 255, 0.12);
+    }
+
+    .message-source-label {
+        color: var(--muted);
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
+    .message-source-chip {
+        border: 1px solid rgba(184, 255, 77, 0.28);
+        border-radius: 999px;
+        padding: 0.18rem 0.48rem;
+        color: var(--lime);
+        background: rgba(184, 255, 77, 0.07);
+        font-size: 0.72rem;
+        line-height: 1.2;
+        text-decoration: none;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+    }
+
+    .message-source-chip:hover {
+        color: #ffffff;
+        border-color: rgba(184, 255, 77, 0.48);
+        text-decoration: none;
+    }
+
+    .custom-chat.loading .custom-chat-bubble {
+        border-left-color: var(--lime);
+        background: linear-gradient(135deg, rgba(17, 20, 33, 0.98), rgba(14, 19, 27, 0.96));
+    }
+
+    .loading-title {
+        color: var(--lime);
+        font-weight: 760;
+        font-size: 0.92rem;
+    }
+
+    .loading-detail {
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 0.25rem;
+    }
+
+    .typing-dots {
+        display: inline-flex;
+        gap: 0.22rem;
+        margin-left: 0.35rem;
+        vertical-align: middle;
+    }
+
+    .typing-dots span {
+        width: 0.34rem;
+        height: 0.34rem;
+        border-radius: 999px;
+        background: var(--lime);
+        opacity: 0.35;
+        animation: pulseDot 1.1s infinite ease-in-out;
+    }
+
+    .typing-dots span:nth-child(2) {
+        animation-delay: 0.16s;
+    }
+
+    .typing-dots span:nth-child(3) {
+        animation-delay: 0.32s;
+    }
+
+    @keyframes pulseDot {
+        0%, 80%, 100% {
+            opacity: 0.25;
+            transform: translateY(0);
+        }
+        40% {
+            opacity: 1;
+            transform: translateY(-2px);
+        }
+    }
+
     [data-testid="stChatMessage"] {
         background: linear-gradient(135deg, rgba(17, 20, 33, 0.95), rgba(11, 14, 24, 0.92));
         border: 1px solid rgba(0, 245, 255, 0.18);
@@ -604,23 +694,24 @@ def run_ingestion(refresh_wikipedia: bool) -> tuple[bool, str]:
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=600,
     )
     output = (completed.stdout or "") + (completed.stderr or "")
     return completed.returncode == 0, output
 
 
 def source_confidence(score: float) -> tuple[str, str]:
-    if score >= 0.18:
+    if score >= 0.55:
         return "High", "confidence-high"
-    if score >= 0.08:
+    if score >= 0.35:
         return "Medium", "confidence-medium"
-    if score > 0:
+    if score >= 0.18:
         return "Low", "confidence-low"
     return "Trace", ""
 
 
 def format_chat_body(content: str) -> str:
+    # Keep answer text safe inside custom HTML and preserve simple markdown lists.
     lines = str(content).splitlines()
     html_parts = []
     in_list = False
@@ -645,19 +736,63 @@ def format_chat_body(content: str) -> str:
     return "\n".join(html_parts)
 
 
-def render_chat_message(role: str, content: str) -> None:
+def build_message_sources_html(sources: list[dict] | None) -> str:
+    if not sources:
+        return ""
+
+    chips = ['<span class="message-source-label">Sources</span>']
+    seen = set()
+    for source in sources:
+        title = str(source.get("title", "Wikipedia source")).strip()
+        if not title or title.lower() in seen:
+            continue
+        seen.add(title.lower())
+        url = str(source.get("source_url", "")).strip()
+        safe_title = escape(title)
+        if url:
+            chips.append(
+                f'<a class="message-source-chip" href="{escape(url, quote=True)}" '
+                f'target="_blank" rel="noopener noreferrer">{safe_title}</a>'
+            )
+        else:
+            chips.append(f'<span class="message-source-chip">{safe_title}</span>')
+        if len(chips) >= 4:
+            break
+
+    return f'<div class="message-source-strip">{"".join(chips)}</div>'
+
+
+def render_chat_message(
+    role: str,
+    content: str,
+    sources: list[dict] | None = None,
+) -> None:
     safe_role = "user" if role == "user" else "assistant"
     label = "Player" if safe_role == "user" else "Arcade RAG"
-    st.markdown(
-        f"""
-        <div class="custom-chat {safe_role}">
-            <div class="custom-chat-bubble">
-                <div class="chat-label">{label}</div>
-                <div class="chat-body">{format_chat_body(content)}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    sources_html = build_message_sources_html(sources) if safe_role == "assistant" else ""
+    message_html = (
+        f'<div class="custom-chat {safe_role}">'
+        '<div class="custom-chat-bubble">'
+        f'<div class="chat-label">{label}</div>'
+        f'<div class="chat-body">{format_chat_body(content)}</div>'
+        f"{sources_html}"
+        "</div>"
+        "</div>"
+    )
+    st.markdown(message_html, unsafe_allow_html=True)
+
+
+def build_loading_html(title: str, detail: str) -> str:
+    return (
+        '<div class="custom-chat assistant loading">'
+        '<div class="custom-chat-bubble">'
+        '<div class="chat-label">Arcade RAG</div>'
+        f'<div class="loading-title">{escape(title)}'
+        '<span class="typing-dots"><span></span><span></span><span></span></span>'
+        "</div>"
+        f'<div class="loading-detail">{escape(detail)}</div>'
+        "</div>"
+        "</div>"
     )
 
 
@@ -744,10 +879,6 @@ def build_retrieval_panel_html(
     )
 
 
-def render_sources(sources: list[dict]) -> None:
-    st.markdown(build_sources_html(sources), unsafe_allow_html=True)
-
-
 initialize_state()
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 metadata = load_index_metadata()
@@ -762,7 +893,8 @@ if answer_engine == "Gemini API" and gemini_ready and not gemini_warning:
 
 source_count = metadata.get("source_count", 0) if metadata else 0
 chunk_count = metadata.get("chunk_count", 0) if metadata else 0
-mode_label = llm_provider if llm_provider != "Extractive" else "RAG"
+retriever_label = metadata.get("retriever", "FAISS") if metadata else "FAISS"
+mode_label = llm_provider if llm_provider != "Extractive" else retriever_label
 
 st.markdown(
     f"""
@@ -772,7 +904,7 @@ st.markdown(
                 <div class="main-title">Arcade RAG Console</div>
                 <div class="subtitle">Gaming knowledge retrieval from the local Wikipedia corpus.</div>
                 <div class="status-strip">
-                    <span class="status-pill">LOCAL INDEX</span>
+                    <span class="status-pill">FAISS INDEX</span>
                     <span class="status-pill">MEMORY ON</span>
                     <span class="status-pill">WIKI CORPUS</span>
                     <span class="status-pill">SOURCE LINKS</span>
@@ -825,10 +957,13 @@ with main_col:
     if not INDEX_METADATA_PATH.exists():
         st.info("Build the index from the command deck before asking questions.")
 
-    st.markdown('<div class="chat-frame">', unsafe_allow_html=True)
+    st.markdown('<div class="chat-frame"></div>', unsafe_allow_html=True)
     for message in st.session_state.messages:
-        render_chat_message(message["role"], message["content"])
-    st.markdown("</div>", unsafe_allow_html=True)
+        render_chat_message(
+            message["role"],
+            message["content"],
+            message.get("sources"),
+        )
 
 with command_col:
     st.markdown(
@@ -866,7 +1001,7 @@ with command_col:
 
     refresh = st.checkbox("Refresh Wikipedia text", value=False, key="refresh_wikipedia")
     if st.button("Build / Rebuild Index", icon=":material/sync:", use_container_width=True):
-        with st.status("Building local vector index...", expanded=True) as status:
+        with st.status("Building FAISS vector index...", expanded=True) as status:
             ok, output = run_ingestion(refresh)
             if ok:
                 load_chatbot.clear()
@@ -894,13 +1029,31 @@ if prompt:
     try:
         chatbot = load_chatbot()
         with main_col:
-            with st.spinner("Retrieving relevant Wikipedia context..."):
+            loading_slot = st.empty()
+            loading_slot.markdown(
+                build_loading_html(
+                    "Starting retrieval",
+                    "Preparing the local gaming corpus search.",
+                ),
+                unsafe_allow_html=True,
+            )
+            with st.status("Preparing source-aware answer...", expanded=True) as status:
+                def update_progress(title: str, detail: str) -> None:
+                    loading_slot.markdown(
+                        build_loading_html(title, detail),
+                        unsafe_allow_html=True,
+                    )
+                    status.write(f"{title}: {detail}")
+
                 result = chatbot.answer(
                     prompt,
                     history=st.session_state.messages[:-1],
                     llm_provider=llm_provider,
+                    progress=update_progress,
                 )
-            render_chat_message("assistant", result["answer"])
+                status.update(label="Answer ready", state="complete", expanded=False)
+            loading_slot.empty()
+            render_chat_message("assistant", result["answer"], result["sources"])
             with st.expander("Retrieved context"):
                 st.caption(f"Search query: {result['search_query']}")
                 for chunk in result["retrieved_chunks"]:
@@ -916,7 +1069,11 @@ if prompt:
                     )
 
         st.session_state.messages.append(
-            {"role": "assistant", "content": result["answer"]}
+            {
+                "role": "assistant",
+                "content": result["answer"],
+                "sources": result["sources"],
+            }
         )
         st.session_state.last_sources = result["sources"]
         st.session_state.last_prompt = prompt
@@ -924,7 +1081,7 @@ if prompt:
         st.rerun()
     except FileNotFoundError:
         with main_col:
-            st.error("Vector index not found. Build the index from the command deck first.")
+            st.error("FAISS index not found. Build the index from the command deck first.")
     except Exception as exc:
         with main_col:
-            st.error(f"API answer mode failed: {exc}")
+            st.error(f"Answer generation failed: {exc}")

@@ -9,6 +9,8 @@ REFERENCE_SECTION_PATTERN = re.compile(
     r"(?:\s*=+)?\s*(?:\n|$)"
 )
 
+# These patterns remove Wikipedia/PDF citation noise before chunking so the
+# retriever ranks article content instead of references and footers.
 CITATION_PATTERN = re.compile(
     r"\[(?:\d+[a-z]?|[a-z]|citation needed|clarification needed|"
     r"failed verification|better source needed|who\?|note \d+)\]",
@@ -62,6 +64,7 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     while start < len(text):
         end = min(start + chunk_size, len(text))
         window = text[start:end]
+        # Prefer sentence or clause boundaries so retrieved chunks read cleanly.
         if end < len(text):
             split_at = max(window.rfind(". "), window.rfind("; "), window.rfind(", "))
             if split_at > chunk_size * 0.6:

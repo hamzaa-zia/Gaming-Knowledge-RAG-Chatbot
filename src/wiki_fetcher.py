@@ -18,6 +18,8 @@ def safe_filename(title: str) -> str:
 
 
 def fetch_wikipedia_extract(title: str, retries: int = 3) -> str:
+    # Use plaintext extracts so refreshed Wikipedia pages follow the same
+    # cleaning/chunking path as PDF and local text sources.
     params = {
         "action": "query",
         "format": "json",
@@ -48,6 +50,8 @@ def refresh_wikipedia_sources(
     output_dir: Path = WIKIPEDIA_UPDATE_DIR,
     source_log_path: Path = WIKI_SOURCE_LOG_PATH,
 ) -> list[dict]:
+    # Refresh failures are logged and skipped so one missing/rate-limited page
+    # does not block rebuilding the rest of the corpus.
     output_dir.mkdir(parents=True, exist_ok=True)
     source_log_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -1,5 +1,6 @@
 import os
 import re
+import time
 
 from dotenv import load_dotenv
 from google import genai
@@ -9,9 +10,12 @@ from src.config import ROOT_DIR
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 MAX_CONTEXT_CHARS = 9000
+GEMINI_MAX_RETRIES = 2
+GEMINI_RETRY_DELAY_SECONDS = 1.5
 
 
 def load_api_environment() -> None:
+    # Support both .env and the user's earlier .env.txt without exposing secrets.
     for env_name in (".env", ".env.txt"):
         env_path = ROOT_DIR / env_name
         if env_path.exists():
@@ -94,6 +98,8 @@ def build_prompt(
     history: list[dict],
     retrieved_chunks: list[dict],
 ) -> tuple[str, str]:
+    # Gemini is used only after retrieval; the prompt tells it to stay grounded
+    # in the ranked Wikipedia chunks and keep the response conversational.
     style_instruction = (
         "Write one relevant, concise conversational paragraph. "
         "Do not use bullet points or numbered lists."
@@ -128,10 +134,29 @@ Answer style:
     return instructions, prompt
 
 
+def is_retryable_gemini_error(error: Exception) -> bool:
+    # Transient API failures should retry; validation/config errors should fail
+    # fast and let the local FAISS fallback answer instead.
+    message = str(error).lower()
+    retryable_markers = (
+        "503",
+        "unavailable",
+        "overloaded",
+        "429",
+        "resource_exhausted",
+        "deadline",
+        "timeout",
+        "temporarily",
+        "try again",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
 def generate_gemini_answer(
     question: str,
     history: list[dict],
     retrieved_chunks: list[dict],
+    max_retries: int = GEMINI_MAX_RETRIES,
 ) -> str:
     api_key = get_gemini_api_key()
     if not api_key:
@@ -143,8 +168,21 @@ def generate_gemini_answer(
         retrieved_chunks=retrieved_chunks,
     )
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=get_gemini_model_name(),
-        contents=f"{instructions}\n\n{prompt}",
-    )
-    return response.text.strip()
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=get_gemini_model_name(),
+                contents=f"{instructions}\n\n{prompt}",
+            )
+            answer = response.text.strip()
+            if answer:
+                return answer
+            raise RuntimeError("Gemini returned an empty response.")
+        except Exception as error:
+            last_error = error
+            if attempt >= max_retries or not is_retryable_gemini_error(error):
+                break
+            time.sleep(GEMINI_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    raise RuntimeError(f"Gemini answer generation failed after retrying: {last_error}")
